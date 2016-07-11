@@ -196,7 +196,6 @@ export KBUILD_BUILDHOST := $(SUBARCH)
 ARCH		?=arm
 CROSS_COMPILE	?=/opt/toolchains/arm-eabi-4.7/bin/arm-eabi-
 
-
 # Architecture as present in compile.h
 UTS_MACHINE 	:= $(ARCH)
 SRCARCH 	:= $(ARCH)
