@@ -668,6 +668,14 @@ void adreno_coresight_stop(struct adreno_device *adreno_dev);
 void adreno_coresight_remove(struct kgsl_device *device);
 
 bool adreno_hw_isidle(struct kgsl_device *device);
+#if defined (CONFIG_FB_MSM_MDSS_FENCE_DBG)
+void xlog_fence(char *name, char *data0_name, u32 data0,
+				char *data1_name, u32 data1,
+				char *data2_name, u32 data2,
+				char *data3_name, u32 data3,
+				char *data4_name, u32 data4, u32 data5);
+void xlog_fence_dump(void);
+#endif
 
 static inline int adreno_is_a3xx(struct adreno_device *adreno_dev)
 {
@@ -758,16 +766,21 @@ static inline int adreno_context_timestamp(struct kgsl_context *k_ctxt,
 static inline int __adreno_add_idle_indirect_cmds(unsigned int *cmds,
 						unsigned int nop_gpuaddr)
 {
-	/* Adding an indirect buffer ensures that the prefetch stalls until
+	/*
+	 * Adding an indirect buffer ensures that the prefetch stalls until
 	 * the commands in indirect buffer have completed. We need to stall
 	 * prefetch with a nop indirect buffer when updating pagetables
-	 * because it provides stabler synchronization */
-	*cmds++ = CP_HDR_INDIRECT_BUFFER_PFD;
+	 * because it provides stabler synchronization. Adding a WME before
+	 * PFE mimics PFD and hence avoids races
+	 */
+	*cmds++ = cp_type3_packet(CP_WAIT_FOR_ME, 1);
+	*cmds++ = 0;
+	*cmds++ = CP_HDR_INDIRECT_BUFFER_PFE;
 	*cmds++ = nop_gpuaddr;
 	*cmds++ = 2;
 	*cmds++ = cp_type3_packet(CP_WAIT_FOR_IDLE, 1);
 	*cmds++ = 0x00000000;
-	return 5;
+	return 7;
 }
 
 static inline int adreno_add_bank_change_cmds(unsigned int *cmds,

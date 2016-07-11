@@ -1,7 +1,7 @@
 /*
  * Linux cfgp2p driver
  *
- * Copyright (C) 1999-2014, Broadcom Corporation
+ * Copyright (C) 1999-2015, Broadcom Corporation
  * 
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -21,7 +21,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: wl_cfgp2p.h 519245 2014-12-05 12:54:10Z $
+ * $Id: wl_cfgp2p.h 602251 2015-11-25 11:28:15Z $
  */
 #ifndef _wl_cfgp2p_h_
 #define _wl_cfgp2p_h_
@@ -74,7 +74,7 @@ struct p2p_saved_ie {
 };
 
 struct p2p_bss {
-	u32 bssidx;
+	s32 bssidx;
 	struct net_device *dev;
 	struct p2p_saved_ie saved_ie;
 	void *private_data;
@@ -152,7 +152,18 @@ enum wl_cfgp2p_status {
 #define CFGP2P_ERROR_TEXT		"CFGP2P-ERROR) "
 #endif
 
-
+#ifdef DHD_LOG_DUMP
+#define CFGP2P_ERR(args)									\
+	do {										\
+		if (wl_dbg_level & WL_DBG_ERR) {				\
+			printk(KERN_INFO CFGP2P_ERROR_TEXT "%s : ", __func__);	\
+			printk args;						\
+			dhd_log_dump_print("[%s] %s: ",	\
+			dhd_log_dump_get_timestamp(), __func__);	\
+			dhd_log_dump_print args;	\
+		}									\
+	} while (0)
+#else
 #define CFGP2P_ERR(args)									\
 	do {										\
 		if (wl_dbg_level & WL_DBG_ERR) {				\
@@ -160,6 +171,7 @@ enum wl_cfgp2p_status {
 			printk args;						\
 		}									\
 	} while (0)
+#endif /* DHD_LOG_DUMP */
 #define	CFGP2P_INFO(args)									\
 	do {										\
 		if (wl_dbg_level & WL_DBG_INFO) {				\

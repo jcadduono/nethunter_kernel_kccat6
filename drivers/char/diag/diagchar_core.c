@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -47,8 +47,6 @@
 #include <linux/compat.h>
 #endif
 
-#include <linux/of.h>
-
 MODULE_DESCRIPTION("Diag Char Driver");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION("1.0");
@@ -83,10 +81,6 @@ static unsigned int threshold_client_limit = 30;
 /* This is the maximum number of pkt registrations supported at initialization*/
 int diag_max_reg = 600;
 int diag_threshold_reg = 750;
-
-#ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
-static int enable_diag;
-#endif
 
 /* Timer variables */
 static struct timer_list drain_timer;
@@ -291,21 +285,28 @@ fail:
 	return -ENOMEM;
 }
 
-static int diagchar_close(struct inode *inode, struct file *file)
+
+static int diag_remove_client_entry(struct file *file)
 {
 	int i = -1;
-	struct diagchar_priv *diagpriv_data = file->private_data;
+	struct diagchar_priv *diagpriv_data = NULL;
 	struct diag_dci_client_tbl *dci_entry = NULL;
 	unsigned long flags;
 
-	pr_debug("diag: process exit %s\n", current->comm);
-	if (!(file->private_data)) {
-		pr_alert("diag: Invalid file pointer");
-		return -ENOMEM;
-	}
-
 	if (!driver)
 		return -ENOMEM;
+
+	mutex_lock(&driver->diag_file_mutex);
+	if (!file) {
+		mutex_unlock(&driver->diag_file_mutex);
+		return -ENOENT;
+	}
+	if (!(file->private_data)) {
+		mutex_unlock(&driver->diag_file_mutex);
+		return -EINVAL;
+	}
+
+	diagpriv_data = file->private_data;
 
 	/* clean up any DCI registrations, if this is a DCI client
 	* This will specially help in case of ungraceful exit of any DCI client
@@ -371,11 +372,18 @@ static int diagchar_close(struct inode *inode, struct file *file)
 			driver->client_map[i].pid = 0;
 			kfree(diagpriv_data);
 			diagpriv_data = NULL;
+			file->private_data = 0;
 			break;
 		}
 	}
 	mutex_unlock(&driver->diagchar_mutex);
+	mutex_unlock(&driver->diag_file_mutex);
 	return 0;
+}
+
+static int diagchar_close(struct inode *inode, struct file *file)
+{
+	return diag_remove_client_entry(file);
 }
 
 int diag_find_polling_reg(int i)
@@ -622,7 +630,9 @@ static int diag_copy_dci(char __user *buf, size_t count,
 {
 	int total_data_len = 0;
 	int ret = 0;
+	int write_len = 0;
 	int exit_stat = 1;
+	uint8_t drain_again = 0;
 	struct diag_dci_buffer_t *buf_entry, *temp;
 	struct diag_smd_info *smd_info = NULL;
 
@@ -631,19 +641,32 @@ static int diag_copy_dci(char __user *buf, size_t count,
 
 	ret = *pret;
 
-	ret += 4;
+	ret += sizeof(int);
+	if (ret >= count) {
+		pr_err("diag: In %s, invalid value for ret: %d, count: %d\n",
+		       __func__, ret, count);
+		return -EINVAL;
+	}
 
 	mutex_lock(&entry->write_buf_mutex);
 	list_for_each_entry_safe(buf_entry, temp, &entry->list_write_buf,
 								buf_track) {
+
+		if ((ret + buf_entry->data_len) > count) {
+			drain_again = 1;
+			break;
+		}
+
 		list_del(&buf_entry->buf_track);
 		mutex_lock(&buf_entry->data_mutex);
 		if ((buf_entry->data_len > 0) &&
 		    (buf_entry->in_busy) &&
 		    (buf_entry->data)) {
 			if (copy_to_user(buf+ret, (void *)buf_entry->data,
-					 buf_entry->data_len))
+					 buf_entry->data_len)) {
+				pr_err("diag: pkt dropped\n");
 				goto drop;
+			}
 			ret += buf_entry->data_len;
 			total_data_len += buf_entry->data_len;
 			diag_ws_on_copy(DIAG_WS_DCI);
@@ -682,25 +705,23 @@ drop:
 
 	if (total_data_len > 0) {
 		/* Copy the total data length */
-		COPY_USER_SPACE_OR_EXIT(buf+8, total_data_len, 4);
-		ret -= 4;
-		/*
-		 * Flush any read that is currently pending on DCI data and
-		 * command channnels. This will ensure that the next read is not
-		 * missed.
-		 */
-		flush_workqueue(driver->diag_dci_wq);
-		diag_ws_on_copy_complete(DIAG_WS_DCI);
+		write_len = copy_to_user(buf + 8, (void *)&total_data_len, 4);
+		if (write_len) {
+			goto exit;
+		}
 	} else {
 		pr_debug("diag: In %s, Trying to copy ZERO bytes, total_data_len: %d\n",
 			__func__, total_data_len);
 	}
 
-	entry->in_service = 0;
 	exit_stat = 0;
 exit:
+	entry->in_service = 0;
 	mutex_unlock(&entry->write_buf_mutex);
 	*pret = ret;
+	if (drain_again)
+		dci_drain_data(0);
+
 	return exit_stat;
 }
 
@@ -963,6 +984,7 @@ static int diag_switch_logging(int requested_mode)
 				pr_err("socket process, status: %d\n",
 					status);
 			}
+			driver->socket_process = NULL;
 		}
 	} else if (driver->logging_mode == SOCKET_MODE) {
 		driver->socket_process = current;
@@ -1584,7 +1606,9 @@ drop:
 		data_type = driver->data_ready[index] & DEINIT_TYPE;
 		COPY_USER_SPACE_OR_EXIT(buf, data_type, 4);
 		driver->data_ready[index] ^= DEINIT_TYPE;
-		goto exit;
+		mutex_unlock(&driver->diagchar_mutex);
+		diag_remove_client_entry(file);
+		return ret;
 	}
 
 	if (driver->data_ready[index] & MSG_MASKS_TYPE) {
@@ -1664,7 +1688,6 @@ drop:
 	if (driver->data_ready[index] & DCI_DATA_TYPE) {
 		/* Copy the type of data being passed */
 		data_type = driver->data_ready[index] & DCI_DATA_TYPE;
-		driver->data_ready[index] ^= DCI_DATA_TYPE;
 		list_for_each_safe(start, temp, &driver->dci_client_list) {
 			entry = list_entry(start, struct diag_dci_client_tbl,
 									track);
@@ -1679,6 +1702,7 @@ drop:
 			DIAG_LOG(DIAG_DEBUG_HIGH, "[%s] + copying dci data to user\n", __func__);
 			copy_dci_data = 1;
 			exit_stat = diag_copy_dci(buf, count, entry, &ret);
+			driver->data_ready[index] ^= DCI_DATA_TYPE;
 			DIAG_LOG(DIAG_DEBUG_HIGH, "[%s] - copying dci data to user, exit_stat: %d\n", __func__, exit_stat);
 			if (exit_stat == 1)
 				goto exit;
@@ -1703,6 +1727,7 @@ drop:
 		goto exit;
 	}
 exit:
+	mutex_unlock(&driver->diagchar_mutex);
 	if (copy_data) {
 		/*
 		 * Flush any work that is currently pending on the data
@@ -1713,9 +1738,16 @@ exit:
 		wake_up(&driver->smd_wait_q);
 		diag_ws_on_copy_complete(DIAG_WS_MD);
 	}
-	if (copy_dci_data)
+	/*
+	 * Flush any read that is currently pending on DCI data and
+	 * command channnels. This will ensure that the next read is not
+	 * missed.
+	 */
+	if (copy_dci_data) {
+		diag_ws_on_copy_complete(DIAG_WS_DCI);
+		flush_workqueue(driver->diag_dci_wq);
 		DIAG_LOG(DIAG_DEBUG_HIGH, "[%s] - finished copying data in this iteration\n", __func__);
-	mutex_unlock(&driver->diagchar_mutex);
+	}
 	return ret;
 }
 
@@ -2527,17 +2559,6 @@ void diagfwd_bridge_fn(int type)
 #else
 inline void diagfwd_bridge_fn(int type) { }
 #endif
-
-#ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
-static int check_diagchar_enabled(char *str)
-{
-	get_option(&str, &enable_diag);
-	pr_debug("%s : enable_diag = %s\n", __func__, ((enable_diag) ? "Yes":"No"));
-	return 0;
-}
-__setup("diag=", check_diagchar_enabled);
-#endif
-
 static int __init diagchar_init(void)
 {
 	dev_t dev;
@@ -2545,13 +2566,6 @@ static int __init diagchar_init(void)
 
 	pr_debug("diagfwd initializing ..\n");
 	ret = 0;
-
-#ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
-	if (!enable_diag) {
-		pr_info("diagchar_core isn't enabled.\n");
-		return -EPERM;
-	}
-#endif
 
 	driver = kzalloc(sizeof(struct diagchar_dev) + 5, GFP_KERNEL);
 	if (!driver)
@@ -2606,7 +2620,9 @@ static int __init diagchar_init(void)
 	driver->mask_check = 0;
 	driver->in_busy_pktdata = 0;
 	driver->in_busy_dcipktdata = 0;
+	spin_lock_init(&driver->diag_mem_lock);
 	mutex_init(&driver->diagchar_mutex);
+	mutex_init(&driver->diag_file_mutex);
 	init_waitqueue_head(&driver->wait_q);
 	init_waitqueue_head(&driver->smd_wait_q);
 	INIT_WORK(&(driver->diag_drain_work), diag_drain_work_fn);

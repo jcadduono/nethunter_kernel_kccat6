@@ -161,7 +161,7 @@ static void initialize_variable(struct ssp_data *data)
 	data->uProxCanc = 0;
 	data->uProxHiThresh = 0;
 	data->uProxLoThresh = 0;
-#if defined(CONFIG_SEC_TRLTE_PROJECT) || defined(CONFIG_SEC_TBLTE_PROJECT)
+#if defined(CONFIG_SEC_TRLTE_PROJECT) || defined(CONFIG_SEC_TBLTE_PROJECT) || defined(CONFIG_SEC_KCCAT6_PROJECT)
 	data->uGyroDps = GYROSCOPE_DPS2000;
 #else
 	data->uGyroDps = GYROSCOPE_DPS500;

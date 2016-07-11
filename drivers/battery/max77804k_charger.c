@@ -116,6 +116,9 @@ static enum power_supply_property sec_charger_props[] = {
 #ifdef WPC_CHECK_CVPRM_FEATURE
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 #endif
+#if defined(CONFIG_BATTERY_SWELLING)
+	POWER_SUPPLY_PROP_VOLTAGE_MAX,
+#endif
 };
 static enum power_supply_property max77804k_otg_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
@@ -338,8 +341,12 @@ static void max77804k_set_input_current(struct max77804k_charger_data *charger,
 	}
 
 	set_current_reg = cur / charger->input_curr_limit_step;
-	if (charger->cable_type == POWER_SUPPLY_TYPE_BATTERY)
-		goto set_input_current;
+	if (charger->cable_type == POWER_SUPPLY_TYPE_BATTERY) {
+		if (charger->status != POWER_SUPPLY_STATUS_CHARGING)
+			goto set_input_current;
+		else
+			goto exit;
+	}
 
 	max77804k_read_reg(charger->max77804k->i2c,
 		set_reg, &reg_data);
@@ -572,10 +579,15 @@ static void reduce_input_current(struct max77804k_charger_data *charger, int cur
 static int max77804k_get_vbus_state(struct max77804k_charger_data *charger)
 {
 	u8 reg_data;
+	union power_supply_propval value;
 
 	max77804k_read_reg(charger->max77804k->i2c,
 		MAX77804K_CHG_REG_CHG_DTLS_00, &reg_data);
-	if (charger->cable_type == POWER_SUPPLY_TYPE_WIRELESS)
+
+	psy_do_property("battery", get, POWER_SUPPLY_PROP_ONLINE,
+			value);
+
+	if (value.intval == POWER_SUPPLY_TYPE_WIRELESS)
 		reg_data = ((reg_data & MAX77804K_WCIN_DTLS) >>
 			MAX77804K_WCIN_DTLS_SHIFT);
 	else
@@ -840,6 +852,13 @@ static int sec_chg_get_property(struct power_supply *psy,
 		val->intval = max77804k_get_charge_votage(charger);
 		break;
 #endif
+#if defined(CONFIG_BATTERY_SWELLING)
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		max77804k_read_reg(charger->max77804k->i2c,MAX77804K_CHG_REG_CHG_CNFG_04, &reg_data);
+		val->intval = reg_data;
+		pr_info("%s: Float voltage : 0x%x\n", __func__, val->intval);
+		break;
+#endif
 	default:
 		return -EINVAL;
 	}
@@ -847,6 +866,7 @@ static int sec_chg_get_property(struct power_supply *psy,
 	return 0;
 }
 
+static u8 max77804k_get_float_voltage_data(int float_voltage);
 static int sec_chg_set_property(struct power_supply *psy,
 		enum power_supply_property psp,
 		const union power_supply_propval *val)
@@ -857,6 +877,9 @@ static int sec_chg_set_property(struct power_supply *psy,
 	int set_charging_current, set_charging_current_max;
 	const int usb_charging_current = charger->pdata->charging_current[
 		POWER_SUPPLY_TYPE_USB].fast_charging_current;
+#if defined(CONFIG_BATTERY_SWELLING)
+	u8 reg_data;
+#endif	
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
@@ -933,6 +956,30 @@ static int sec_chg_set_property(struct power_supply *psy,
 				}
 			}
 		}
+		
+		if (charger->pdata->full_check_type_2nd == SEC_BATTERY_FULLCHARGED_CHGPSY) {
+			union power_supply_propval chg_mode;
+			psy_do_property("battery", get, POWER_SUPPLY_PROP_CHARGE_NOW, chg_mode);
+
+			if (chg_mode.intval == SEC_BATTERY_CHARGING_2ND) {
+				max77804k_set_charger_state(charger, 0);
+				max77804k_set_topoff_current(charger,
+							    charger->pdata->charging_current[
+								    charger->cable_type].full_check_current_2nd,
+							    (70 * 60));
+			} else {
+				max77804k_set_topoff_current(charger,
+							    charger->pdata->charging_current[
+								    charger->cable_type].full_check_current_1st,
+							    (70 * 60));
+			}
+		} else {
+			max77804k_set_topoff_current(charger,
+				charger->pdata->charging_current[
+				val->intval].full_check_current_1st,
+				charger->pdata->charging_current[
+				val->intval].full_check_current_2nd);
+		}
 		max77804k_set_charger_state(charger, charger->is_charging);
 		/* if battery full, only disable charging  */
 		if ((charger->status == POWER_SUPPLY_STATUS_CHARGING) ||
@@ -950,11 +997,6 @@ static int sec_chg_set_property(struct power_supply *psy,
 			else
 				max77804k_set_input_current(charger,
 						set_charging_current_max);
-			max77804k_set_topoff_current(charger,
-				charger->pdata->charging_current[
-				val->intval].full_check_current_1st,
-				charger->pdata->charging_current[
-				val->intval].full_check_current_2nd);
 		}
 		break;
 	/* val->intval : input charging current */
@@ -964,6 +1006,10 @@ static int sec_chg_set_property(struct power_supply *psy,
 	/*  val->intval : charging current */
 	case POWER_SUPPLY_PROP_CURRENT_AVG:
 		charger->charging_current = val->intval;
+#if defined(CONFIG_BATTERY_SWELLING)
+		max77804k_set_charge_current(charger,
+				val->intval);
+#endif
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		max77804k_set_charge_current(charger,
@@ -1043,6 +1089,18 @@ static int sec_chg_set_property(struct power_supply *psy,
 		pr_info("%s: set CNFG_12: 0x%x\n", __func__, cnfg12);
 		break;
 	}
+#endif
+#if defined(CONFIG_BATTERY_SWELLING)
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		pr_info("%s: float voltage(%d)\n", __func__, val->intval);
+		reg_data = max77804k_get_float_voltage_data(val->intval);
+		max77804k_update_reg(charger->max77804k->i2c, MAX77804K_CHG_REG_CHG_CNFG_04,
+				(reg_data << MAX77804K_CHG_CNFG_04_CHG_CV_PRM_SHIFT),
+				MAX77804K_CHG_CNFG_04_CHG_CV_PRM_MASK);
+		max77804k_read_reg(charger->max77804k->i2c,
+				MAX77804K_CHG_REG_CHG_CNFG_04, &reg_data);
+		pr_info("%s: Float voltage set to : 0x%x\n", __func__, reg_data);
+		break;
 #endif
 	default:
 		return -EINVAL;
@@ -1636,21 +1694,32 @@ static int sec_charger_read_u32_index_dt(const struct device_node *np,
 
 static int sec_charger_parse_dt(struct max77804k_charger_data *charger)
 {
-	struct device_node *np = of_find_node_by_name(NULL, "charger");
+	struct device_node *np = NULL;
 	sec_charger_platform_data_t *pdata = charger->pdata;
 	int ret = 0;
 	int i, len;
 	const u32 *p;
 
+	np = of_find_node_by_name(NULL, "battery");
 	if (np == NULL) {
-		pr_err("%s np NULL\n", __func__);
+		pr_err("%s: np NULL\n", __func__);
+		goto err;
+	} else {
+		ret = of_property_read_u32(np, "battery,full_check_type",
+					&pdata->full_check_type);
+		ret = of_property_read_u32(np, "battery,full_check_type_2nd",
+					&pdata->full_check_type_2nd);
+	}
+
+	np = of_find_node_by_name(NULL, "charger");
+	if (np == NULL) {
+		pr_err("%s: np NULL\n", __func__);
+		goto err;
 	} else {
 		ret = of_property_read_u32(np, "battery,chg_float_voltage",
 					&pdata->chg_float_voltage);
 		ret = of_property_read_u32(np, "battery,ovp_uvlo_check_type",
 					&pdata->ovp_uvlo_check_type);
-		ret = of_property_read_u32(np, "battery,full_check_type",
-					&pdata->full_check_type);
 
 		p = of_get_property(np, "battery,input_current_limit", &len);
 		len = len / sizeof(u32);
@@ -1687,7 +1756,7 @@ static int sec_charger_parse_dt(struct max77804k_charger_data *charger)
 		}
 #endif
 	}
-
+err:
 	return ret;
 }
 #endif

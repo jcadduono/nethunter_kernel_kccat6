@@ -1695,9 +1695,13 @@ int fw_download(void *arg)
 	struct es705_priv *priv = (struct es705_priv *)arg;
 	int rc;
 
-	dev_info(priv->dev, "%s(): fw download\n", __func__);
-	rc = es705_bootup(priv);
-	dev_info(priv->dev, "%s(): bootup rc=%d\n", __func__, rc);
+	if (priv->fw_requested) {
+		dev_info(priv->dev, "%s(): fw download\n", __func__);
+		rc = es705_bootup(priv);
+		dev_info(priv->dev, "%s(): bootup rc=%d\n", __func__, rc);
+	} else {
+		dev_err(priv->dev, "%s(): unable to locate firmware file\n", __func__);
+	}
 
 	rc = register_snd_soc(priv);
 	dev_info(priv->dev, "%s(): register_snd_soc rc=%d\n", __func__, rc);
@@ -5369,6 +5373,7 @@ static __init int es705_init(void)
 	mutex_init(&es705_priv.pm_mutex);
 	mutex_init(&es705_priv.cvq_mutex);
 	mutex_init(&es705_priv.streaming_mutex);
+	mutex_init(&es705_priv.datablock_read_mutex);
 
 	init_waitqueue_head(&es705_priv.stream_in_q);
 

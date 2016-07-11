@@ -68,6 +68,9 @@ Copyright (C) 2012, Samsung Electronics. All rights reserved.
 #define PARSE_STRING 64
 #define MAX_EXTRA_POWER_GPIO 3
 
+/* Before ALPM Brightenss */
+#define ALPM_BRIGHTNESS 0
+
 /* Brightness stuff */
 #define BRIGHTNESS_MAX_PACKET 50
 #define HBM_MODE 6
@@ -371,6 +374,7 @@ struct panel_func {
 	void (*mdss_samsung_event_frame_update)(struct mdss_panel_data *pdata, int event, void *arg);
 	void (*mdss_samsung_event_fb_event_callback)(struct mdss_panel_data *pdata, int event, void *arg);
 	void (*mdss_samsung_event_osc_te_fitting)(struct mdss_panel_data *pdata, int event, void *arg);
+	void (*mdss_samsung_event_esd_recovery_init)(struct mdss_panel_data *pdata);
 
 	/* OSC Tuning */
 	int (*samsung_osc_te_fitting)(struct mdss_dsi_ctrl_pdata *ctrl);
@@ -561,7 +565,6 @@ extern void mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl,
 extern struct dsi_status_data *pstatus_data;
 
 u8 alpm_status_func(u8 flag);
-
 
 /* HMT FUNCTION */
 int hmt_bright_update(struct mdss_dsi_ctrl_pdata *ctrl);
