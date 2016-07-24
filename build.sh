@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stock kernel for Samsung Galaxy S5 Plus build script by jcadduono
+# Kali NetHunter kernel for Samsung Galaxy S5 Plus build script by jcadduono
 
 ################### BEFORE STARTING ################
 #
@@ -29,7 +29,7 @@ THREADS=5
 export ARCH=arm
 export CROSS_COMPILE=$TOOLCHAIN/bin/arm-linux-gnueabihf-
 
-[ "$TARGET" ] || TARGET=stock
+[ "$TARGET" ] || TARGET=nethunter
 [ "$1" ] && DEVICE=$1
 [ "$DEVICE" ] || DEVICE=kccat6
 
